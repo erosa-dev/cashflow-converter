@@ -1,20 +1,24 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from tkinter import ttk
-from pathlib import Path
-import threading
+# Imnporta as bibliotecas necessárias
+import tkinter as tk # Responsável pela interface gráfica
+from tkinter import filedialog, messagebox # Diálogos de arquivo e mensagens
+from tkinter import ttk # Widgets avançados do tkinter
+from pathlib import Path # Manipulação de caminhos de arquivos (entre PC e o programa)
+import threading # Para rodar o processamento em thread separada e não travar a GUI (interface gráfica)
 
-import pandas as pd
-from openpyxl import load_workbook
-from datetime import datetime
+import pandas as pd # Manipulação de dados em DataFrames
+from openpyxl import load_workbook # Manipulação direta de arquivos Excel (.xlsx)
+from datetime import datetime # Manipulação de datas
 
 # ---------- Utilidades ----------
+
+# Mapeamento meses Português para Inglês: as bibliotecas só entendem em inglês
 MESES_PT_EN = {
     'jan': 'Jan', 'fev': 'Feb', 'mar': 'Mar', 'abr': 'Apr',
     'mai': 'May', 'jun': 'Jun', 'jul': 'Jul', 'ago': 'Aug',
     'set': 'Sep', 'out': 'Oct', 'nov': 'Nov', 'dez': 'Dec'
 }
 
+# Função para converter datas no formato 'mmm/aa' em pt-br para datetime usando o mapa acima
 def converter_data_ptbr(mes_ano: str):
     if isinstance(mes_ao := mes_ano, str) and '/' in mes_ao:
         mes, ano = mes_ao.split('/')
@@ -22,12 +26,13 @@ def converter_data_ptbr(mes_ano: str):
         return datetime.strptime(f"{mes_en}/{ano}", "%b/%y").replace(day=1)
     return pd.NaT
 
+# Função para corrigir a planilha de entrada conforme regras especificadas
 def corrigir_planilha_entrada(caminho_xlsx: Path) -> Path:
-    """
-    1) Renomeia aba ativa para 'Aba1'
-    2) Se houver merge que intersecte A1:C2, desfaz, move valor A1 -> C1 e limpa A1
-    3) Salva uma cópia temporária corrigida ao lado do original
-    """
+
+    # 1) Renomeia aba ativa para 'Aba1'
+    # 2) Se houver merge que intersecte A1:C2, desfaz, move valor A1 -> C1 e limpa A1
+    # 3) Salva uma cópia temporária corrigida ao lado do original (esse arquivo é apagado automaticamente depois do uso)
+
     wb = load_workbook(caminho_xlsx)
     ws = wb.active
     ws.title = "Aba1"
@@ -37,7 +42,7 @@ def corrigir_planilha_entrada(caminho_xlsx: Path) -> Path:
     except Exception:
         pass
 
-    # Trata merges que atinjam A1:C2
+    # Trata mesclas que atinjam A1:C2 do cabeçalho
     for rng in list(ws.merged_cells.ranges):
         if rng.min_row <= 2 and rng.min_col <= 3 and rng.max_row >= 1 and rng.max_col >= 1:
             valor = ws["A1"].value
@@ -46,24 +51,23 @@ def corrigir_planilha_entrada(caminho_xlsx: Path) -> Path:
             ws["A1"] = None
             break
 
-    temp_path = caminho_xlsx.with_name(f"{caminho_xlsx.stem}__corrigido.xlsx")
+    temp_path = caminho_xlsx.with_name(f"{caminho_xlsx.stem}__corrigido.xlsx") # Arquivo temporário mencionado anteriormente
     wb.save(temp_path)
     return temp_path
 
+# Função para transformar a planilha corrigida em DataFrame conforme regras, para então se tornar a planilha final
 def transformar_planilha_corrigida(caminho_corrigido: Path, codigo_obra: str) -> pd.DataFrame:
-    """
-    - Lê 'Aba1'
-    - Padroniza colunas
-    - Reconstrói Classe2/Classe3/ClasseComp a partir de 'unnamed: 1'
-    - Regra geral: mantém linhas com exatamente 1 mês com valor
-    - Para o código 1030303 NÃO há agregação; apenas força:
-        * 'Cto/ Pedido/ NF' = 'Documento'
-        * 'Descrição' = 'Custos com Serviços PJ - Obra'
-      (mantendo valores e datas normalmente por linha)
-    - Converte Data (mmm/aa) para as linhas gerais
-    - Insere CC (primeira coluna)
-    - Retorna DataFrame (não salva aqui)
-    """
+
+    # - Lê 'Aba1'
+    # - Padroniza colunas
+    # - Reconstrói Classe2/Classe3/ClasseComp a partir de 'unnamed: 1' (ficou assim pois tiramos as mesclas)
+    # - Regra geral: mantém linhas com exatamente 1 mês com valor (essa foi a melhor forma de garantir granularidade)
+    #   (mantendo valores e datas normalmente por linha)
+    # - Converte Data (mmm/aa) para as linhas gerais
+    # - Insere CC (primeira coluna) - código fornecido pelo usuário no GUI
+    # - Retorna DataFrame (não salva aqui)
+    # - Regra especial para ClasseComp '1030303': não agrega, força Descrição e Documento conforme regras
+
     df = pd.read_excel(caminho_corrigido, sheet_name="Aba1")
     df.columns = [str(c).strip().lower().replace('\n', ' ') for c in df.columns]
     df.columns = [c.replace('  ', ' ') for c in df.columns]
@@ -139,16 +143,16 @@ def transformar_planilha_corrigida(caminho_corrigido: Path, codigo_obra: str) ->
     colunas_validas = ['CC', 'Classe2', 'Classe3', 'ClasseComp', 'Descrição', 'Cto/ Pedido/ NF', 'Valor', 'Data']
     df_final = df_final.reindex(columns=colunas_validas)
 
-    return df_final
+    return df_final # Retorna o DataFrame final pronto para ser usado no Power BI
 
-
+# Função específica para transformar planilha em DataFrame para o caso do Previsto. Pega somente os dados de previsão.
 def transformar_previsto_corrigido(caminho_corrigido: Path, codigo_obra: str) -> pd.DataFrame:
-    """
-    - Lê 'Aba1' já corrigida
-    - Reconstrói Classe2/Classe3/ClasseComp (coluna 'unnamed: 1')
-    - Para cada linha com ClasseComp (7+ dígitos), captura o Verba ('Unnamed: 4')
-    - Retorna DataFrame com colunas: CC, Classe2, Classe3, ClasseComp, Verba
-    """
+
+    # - Lê 'Aba1' já corrigida
+    # - Reconstrói Classe2/Classe3/ClasseComp (coluna 'unnamed: 1')
+    # - Para cada linha com ClasseComp (7+ dígitos), captura o Verba ('Unnamed: 4')
+    # - Retorna DataFrame com colunas: CC, Classe2, Classe3, ClasseComp, Verba
+
     df = pd.read_excel(caminho_corrigido, sheet_name="Aba1")
     df.columns = [str(c).strip().lower().replace('\n', ' ') for c in df.columns]
     df.columns = [c.replace('  ', ' ') for c in df.columns]
@@ -193,11 +197,12 @@ def transformar_previsto_corrigido(caminho_corrigido: Path, codigo_obra: str) ->
                 pass
 
     df_prev = pd.DataFrame(dados)
-    # Garante colunas finais e elimina “fantasmas”
-    colunas_validas = ['CC', 'Classe2', 'Classe3', 'ClasseComp', 'Verba']
+    # Garante colunas finais e elimina “fantasmas” - "Null"
+    colunas_validas = ['CC', 'Classe2', 'Classe3', 'ClasseComp', 'Verba'] # Ordem final esperada das colunas
     df_prev = df_prev.reindex(columns=colunas_validas)
     return df_prev
 
+# ---------- Lógica de processamento para o Previsto ----------
 def processar_consolidado_previsto():
     linhas = []
     for item in tree_previsto.get_children():
@@ -216,13 +221,13 @@ def processar_consolidado_previsto():
     btn_processar_prev.config(state=tk.DISABLED)
     t = threading.Thread(target=_worker_consolidar_previsto, args=(linhas, Path(pasta_saida),), daemon=True)
     t.start()
-
+# Lógica de processamento em thread separada - pra não travar
 def _worker_consolidar_previsto(linhas, pasta_saida: Path):
     try:
         agregados = []
         for arquivo, cc in linhas:
             p = Path(arquivo)
-            corr = corrigir_planilha_entrada(p)  # mesma correção do Orçado
+            corr = corrigir_planilha_entrada(p)  # mesma correção do Orçado, ou seja só chama a função QUE JÁ ESTÁ PRONTA NO INÍCIO do código
             try:
                 df_parcial = transformar_previsto_corrigido(corr, cc)
                 if df_parcial is not None and not df_parcial.empty:
@@ -254,6 +259,7 @@ def _worker_consolidar_previsto(linhas, pasta_saida: Path):
     finally:
         btn_processar_prev.config(state=tk.NORMAL)
 
+# ---------- GUI / Lógica de processamento para o Previsto ----------
 def selecionar_arquivos_prev():
     arquivos = filedialog.askopenfilenames(title="Selecione as planilhas Excel (Previsto)", filetypes=[("Excel", "*.xlsx")])
     if not arquivos:
@@ -261,6 +267,7 @@ def selecionar_arquivos_prev():
     for arq in arquivos:
         tree_previsto.insert("", tk.END, values=(arq, ""))
 
+# Define CC para os itens selecionados na tabela do Previsto
 def definir_cc_para_selecionado_prev():
     sel = tree_previsto.selection()
     cc = entry_cc_prev.get().strip()
@@ -275,6 +282,7 @@ def definir_cc_para_selecionado_prev():
         valores[1] = cc
         tree_previsto.item(item, values=valores)
 
+# Seleciona pasta de saída para o Previsto
 def selecionar_pasta_saida_prev():
     pasta = filedialog.askdirectory(title="Selecione a pasta para salvar o consolidado (Previsto)")
     if pasta:
@@ -293,6 +301,7 @@ def selecionar_arquivos():
     for arq in arquivos:
         tree.insert("", tk.END, values=(arq, ""))
 
+# Define CC para os itens selecionados na tabela
 def definir_cc_para_selecionado():
     sel = tree.selection()
     cc = entry_cc.get().strip()
@@ -307,6 +316,7 @@ def definir_cc_para_selecionado():
         valores[1] = cc
         tree.item(item, values=valores)
 
+# Seleciona pasta de saída
 def selecionar_pasta_saida():
     pasta = filedialog.askdirectory(title="Selecione a pasta para salvar o consolidado")
     if pasta:
@@ -336,6 +346,7 @@ def processar_consolidado():
     t = threading.Thread(target=_worker_consolidar, args=(linhas, Path(pasta_saida),), daemon=True)
     t.start()
 
+# Lógica de processamento em thread separada - pra não travar
 def _worker_consolidar(linhas, pasta_saida: Path):
     try:
         agregados = []
@@ -352,10 +363,10 @@ def _worker_consolidar(linhas, pasta_saida: Path):
                     corr.unlink(missing_ok=True)
                 except Exception:
                     pass
-
+        # Verifica se há dados
         if not agregados:
             raise ValueError("Nenhum lançamento encontrado em nenhum arquivo.")
-
+        # Consolida tudo
         df_final = pd.concat(agregados, ignore_index=True)
 
         # REMOVE se por ventura vier um "Custos com Serviços [FD]" no resultado
@@ -377,6 +388,7 @@ def _worker_consolidar(linhas, pasta_saida: Path):
         btn_processar.config(state=tk.NORMAL)
 
 # ---------- Montagem da Interface com ABAS ----------
+# Configuração da janela principal e chamada da biblioteca tkinter
 root = tk.Tk()
 root.title("Consolidador de Planilhas - CC por Arquivo")
 
@@ -475,7 +487,7 @@ ajuda_txt = (
     "3) Selecione uma obra e digite o CC no campo 'Código Externo da Obra (CC)' e clique 'Aplicar ao(s) selecionado(s)'.\n"
     "4) Escolha a pasta de saída e clique em 'Processar e Consolidar'.\n"
     "\nCaso tenha problemas e precise entrar em contato com o desenvolvedor:\n"
-    "eric.rosa@elco.com.br\n"
+    "eric.rosa@elco.com.br ou ericorosa27@gmail.com pelo teams\n"
     "\nRegras do processamento:\n"
     "- Hierarquia vem da coluna B (Unnamed: 1): 3/5/7+ dígitos => Classe2/Classe3/ClasseComp.\n"
     "- Só entram linhas com exatamente 1 mês com valor.\n"
@@ -483,8 +495,8 @@ ajuda_txt = (
     "- Anexe os arquivos originais sem alterações (extraídos diretamente do Mega); o programa faz as correções necessárias.\n"
     "- A coluna 'CC' é inserida como primeira coluna.\n"
     " "
-    "Versão V7.0.1 - Novembro, 2025"
+    "Versão V7.0.2 - Novembro, 2025"
 )
 tk.Message(tab_ajuda, text=ajuda_txt, width=680).pack(padx=20, pady=20)
 
-root.mainloop()
+root.mainloop() # Mantém a janela aberta
